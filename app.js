@@ -1,7 +1,23 @@
 require("dotenv").config();
+
 const express = require("express");
+const cors = require("cors");
+
+const app = express();
+
+app.use(cors());
+
+const { PrismaClient } = require("@prisma/client");
+const prisma = new PrismaClient();
+
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 
 const { validateUser } = require("./utils/validation");
+const LoggerMiddleware = require('./middlewares/logger');
+const errorHandler = require('./middlewares/errorHandler');
+const authenticateToken = require('./middlewares/auth');
+
 
 const bodyParser = require("body-parser");
 
@@ -9,10 +25,12 @@ const fs = require("fs");
 const path = require("path");
 const userFilePath = path.join(__dirname, "users.json");
 
-const app = express();
+
 
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
+app.use(LoggerMiddleware);
+app.use(errorHandler);
 
 const PORT = process.env.PORT || 3000;
 
@@ -146,6 +164,52 @@ app.delete('/users/:id', (req, res) => {
   });
 });
 
+// Endpoint que se encarga solamente de los errores
+app.get('/error', (req, res, next) =>{
+  next(new Error('Error Intencional'));
+});
+
+
+app.get('/db/users', async (req, res) => {
+  try {
+    const users = await prisma.user.findMany();
+    res.json(users);
+  } catch (error) {
+    res.status(500).json({ error: "Error al comunicarse con la base de datos" });
+  }
+});
+
+app.get('/protected-route', authenticateToken, (req, res) => {
+    res.send("Esta es una ruta protegida");
+});
+
+app.post('/register', async (req, res) => {
+  const { email, password, name } = req.body;
+  const hashedPassword = await bcrypt.hash(password, 10);
+
+  const newUser = await prisma.user.create({
+    data: {
+      email,
+      password: hashedPassword,
+      name,
+      role: 'USER'
+    }
+  });
+  res.status(201).json({ message: 'User Register Successfully'});
+});
+
+app.post('/login', async (req, res,) =>{
+  const {email, password} = req.body;
+  const user = await prisma.user.findUnique({ where: { email }});
+
+  if (!user) return res.status(400).json({ error: 'Ivalid email or password'});
+  const validPassword = await bcrypt.compare(password, user.password);
+
+  if(!validPassword) return res.status(400).json({ error: 'Ivalid email or password'});
+
+  const token = jwt.sign({ id: user.id, role: user.role}, process.env.JWT_SECRET, {expiresIn: '4h'});
+  res.json({ token });
+});
 
 app.listen(PORT, () => {
   console.log(`Servidor: http://localhost:${PORT}`);
